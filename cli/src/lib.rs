@@ -17,7 +17,6 @@
 //! Polkadot CLI library.
 
 #![warn(missing_docs)]
-#![warn(unused_extern_crates)]
 
 #[cfg(feature = "browser")]
 mod browser;
@@ -26,18 +25,14 @@ mod cli;
 #[cfg(feature = "cli")]
 mod command;
 
-#[cfg(not(feature = "service-rewr"))]
 pub use service::{
-	AbstractService, ProvideRuntimeApi, CoreApi, ParachainHost, IdentifyVariant,
-	Block, self, RuntimeApiCollection, TFullClient
+	self,
+	ProvideRuntimeApi, CoreApi, IdentifyVariant,
+	Block, RuntimeApiCollection, TFullClient,
 };
 
-#[cfg(feature = "service-rewr")]
-pub use service_new::{
-	self as service,
-	AbstractService, ProvideRuntimeApi, CoreApi, ParachainHost, IdentifyVariant,
-	Block, self, RuntimeApiCollection, TFullClient
-};
+#[cfg(feature = "malus")]
+pub use service::create_default_subsystems;
 
 #[cfg(feature = "cli")]
 pub use cli::*;

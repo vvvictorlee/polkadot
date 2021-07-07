@@ -21,27 +21,59 @@ use structopt::StructOpt;
 #[allow(missing_docs)]
 #[derive(Debug, StructOpt)]
 pub enum Subcommand {
-	#[allow(missing_docs)]
-	#[structopt(flatten)]
-	Base(sc_cli::Subcommand),
+	/// Build a chain specification.
+	BuildSpec(sc_cli::BuildSpecCmd),
+
+	/// Validate blocks.
+	CheckBlock(sc_cli::CheckBlockCmd),
+
+	/// Export blocks.
+	ExportBlocks(sc_cli::ExportBlocksCmd),
+
+	/// Export the state of a given block into a chain spec.
+	ExportState(sc_cli::ExportStateCmd),
+
+	/// Import blocks.
+	ImportBlocks(sc_cli::ImportBlocksCmd),
+
+	/// Remove the whole chain.
+	PurgeChain(sc_cli::PurgeChainCmd),
+
+	/// Revert the chain to a previous state.
+	Revert(sc_cli::RevertCmd),
 
 	#[allow(missing_docs)]
-	#[structopt(name = "validation-worker", setting = structopt::clap::AppSettings::Hidden)]
-	ValidationWorker(ValidationWorkerCommand),
+	#[structopt(name = "prepare-worker", setting = structopt::clap::AppSettings::Hidden)]
+	PvfPrepareWorker(ValidationWorkerCommand),
 
-	/// The custom benchmark subcommmand benchmarking runtime pallets.
+	#[allow(missing_docs)]
+	#[structopt(name = "execute-worker", setting = structopt::clap::AppSettings::Hidden)]
+	PvfExecuteWorker(ValidationWorkerCommand),
+
+	/// The custom benchmark subcommand benchmarking runtime pallets.
 	#[structopt(
 		name = "benchmark",
 		about = "Benchmark runtime pallets."
 	)]
 	Benchmark(frame_benchmarking_cli::BenchmarkCmd),
+
+	/// Try some command against runtime state.
+	#[cfg(feature = "try-runtime")]
+	TryRuntime(try_runtime_cli::TryRuntimeCmd),
+
+	/// Try some command against runtime state. Note: `try-runtime` feature must be enabled.
+	#[cfg(not(feature = "try-runtime"))]
+	TryRuntime,
+
+	/// Key management cli utilities
+	Key(sc_cli::KeySubcommand),
 }
 
 #[allow(missing_docs)]
 #[derive(Debug, StructOpt)]
 pub struct ValidationWorkerCommand {
-	#[allow(missing_docs)]
-	pub mem_id: String,
+	/// The path to the validation host's socket.
+	pub socket_path: String,
 }
 
 #[allow(missing_docs)]
@@ -59,17 +91,9 @@ pub struct RunCmd {
 	#[structopt(long = "force-westend")]
 	pub force_westend: bool,
 
-	/// Enable the authority discovery module.
-	///
-	/// (1) As a validator node: Make oneself discoverable by publishing either
-	///     ones own network addresses, or the ones of ones sentry nodes
-	///     (configured via the `sentry-nodes` flag).
-	///
-	/// (2) As a validator or sentry node: Discover addresses of validators or
-	///     addresses of their sentry nodes and maintain a permanent connection
-	///     to a subset.
-	#[structopt(long = "enable-authority-discovery")]
-	pub authority_discovery_enabled: bool,
+	/// Force using Rococo native runtime.
+	#[structopt(long = "force-rococo")]
+	pub force_rococo: bool,
 
 	/// Setup a GRANDPA scheduled voting pause.
 	///
@@ -79,16 +103,24 @@ pub struct RunCmd {
 	/// elapsed (i.e. until a block at height `pause_block + delay` is imported).
 	#[structopt(long = "grandpa-pause", number_of_values(2))]
 	pub grandpa_pause: Vec<u32>,
+
+	/// Disable BEEFY gadget.
+	#[structopt(long)]
+	pub no_beefy: bool,
+
+	/// Add the destination address to the jaeger agent.
+	///
+	/// Must be valid socket address, of format `IP:Port`
+	/// commonly `127.0.0.1:6831`.
+	#[structopt(long)]
+	pub jaeger_agent: Option<std::net::SocketAddr>,
 }
 
 #[allow(missing_docs)]
 #[derive(Debug, StructOpt)]
 pub struct Cli {
-	#[allow(missing_docs)]
 	#[structopt(subcommand)]
 	pub subcommand: Option<Subcommand>,
-
-	#[allow(missing_docs)]
 	#[structopt(flatten)]
 	pub run: RunCmd,
 }

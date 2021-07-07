@@ -16,10 +16,10 @@
 
 /// Money matters.
 pub mod currency {
-	use primitives::Balance;
+	use primitives::v0::Balance;
 
-	pub const DOTS: Balance = 1_000_000_000_000;
-	pub const DOLLARS: Balance = DOTS / 100;       // 10_000_000_000
+	pub const UNITS: Balance = 10_000_000_000;
+	pub const DOLLARS: Balance = UNITS;       // 10_000_000_000
 	pub const CENTS: Balance = DOLLARS / 100;      // 100_000_000
 	pub const MILLICENTS: Balance = CENTS / 1_000; // 100_000
 
@@ -30,10 +30,10 @@ pub mod currency {
 
 /// Time and blocks.
 pub mod time {
-	use primitives::{Moment, BlockNumber};
+	use primitives::v0::{Moment, BlockNumber};
 	pub const MILLISECS_PER_BLOCK: Moment = 6000;
 	pub const SLOT_DURATION: Moment = MILLISECS_PER_BLOCK;
-	pub const EPOCH_DURATION_IN_BLOCKS: BlockNumber = 4 * HOURS;
+	pub const EPOCH_DURATION_IN_SLOTS: BlockNumber = 4 * HOURS;
 
 	// These time units are defined in number of blocks.
 	pub const MINUTES: BlockNumber = 60_000 / (MILLISECS_PER_BLOCK as BlockNumber);
@@ -47,7 +47,7 @@ pub mod time {
 /// Fee-related.
 pub mod fee {
 	pub use sp_runtime::Perbill;
-	use primitives::Balance;
+	use primitives::v0::Balance;
 	use runtime_common::ExtrinsicBaseWeight;
 	use frame_support::weights::{
 		WeightToFeePolynomial, WeightToFeeCoefficient, WeightToFeeCoefficients,
@@ -61,7 +61,7 @@ pub mod fee {
 	/// node's balance type.
 	///
 	/// This should typically create a mapping between the following ranges:
-	///   - [0, system::MaximumBlockWeight]
+	///   - [0, MAXIMUM_BLOCK_WEIGHT]
 	///   - [Balance::min, Balance::max]
 	///
 	/// Yet, it can be used for any other sort of change to weight-fee. Some examples being:
@@ -77,7 +77,7 @@ pub mod fee {
 			smallvec![WeightToFeeCoefficient {
 				degree: 1,
 				negative: false,
-				coeff_frac: Perbill::from_rational_approximation(p % q, q),
+				coeff_frac: Perbill::from_rational(p % q, q),
 				coeff_integer: p / q,
 			}]
 		}
@@ -87,16 +87,16 @@ pub mod fee {
 #[cfg(test)]
 mod tests {
 	use frame_support::weights::WeightToFeePolynomial;
-	use runtime_common::{MaximumBlockWeight, ExtrinsicBaseWeight};
+	use runtime_common::{MAXIMUM_BLOCK_WEIGHT, ExtrinsicBaseWeight};
 	use super::fee::WeightToFee;
 	use super::currency::{CENTS, DOLLARS, MILLICENTS};
 
 	#[test]
-	// This function tests that the fee for `MaximumBlockWeight` of weight is correct
+	// This function tests that the fee for `MAXIMUM_BLOCK_WEIGHT` of weight is correct
 	fn full_block_fee_is_correct() {
 		// A full block should cost 16 DOLLARS
 		println!("Base: {}", ExtrinsicBaseWeight::get());
-		let x = WeightToFee::calc(&MaximumBlockWeight::get());
+		let x = WeightToFee::calc(&MAXIMUM_BLOCK_WEIGHT);
 		let y = 16 * DOLLARS;
 		assert!(x.max(y) - x.min(y) < MILLICENTS);
 	}

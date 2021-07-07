@@ -16,111 +16,193 @@
 
 //! Auxillary struct/enums for polkadot runtime.
 
-use sp_runtime::traits::{Convert, Saturating};
-use sp_runtime::{FixedPointNumber, FixedI128, Perquintill};
-use frame_support::traits::{OnUnbalanced, Imbalance, Currency, Get};
-use crate::{MaximumBlockWeight, NegativeImbalance};
+use frame_support::traits::{OnUnbalanced, Imbalance, Currency};
+use crate::NegativeImbalance;
 
 /// Logic for the author to get a portion of fees.
 pub struct ToAuthor<R>(sp_std::marker::PhantomData<R>);
-
 impl<R> OnUnbalanced<NegativeImbalance<R>> for ToAuthor<R>
 where
-	R: balances::Trait + authorship::Trait,
-	<R as system::Trait>::AccountId: From<primitives::AccountId>,
-	<R as system::Trait>::AccountId: Into<primitives::AccountId>,
-	<R as system::Trait>::Event: From<balances::RawEvent<
-		<R as system::Trait>::AccountId,
-		<R as balances::Trait>::Balance,
-		balances::DefaultInstance>
-	>,
+	R: pallet_balances::Config + pallet_authorship::Config,
+	<R as frame_system::Config>::AccountId: From<primitives::v1::AccountId>,
+	<R as frame_system::Config>::AccountId: Into<primitives::v1::AccountId>,
+	<R as frame_system::Config>::Event: From<pallet_balances::Event<R>>,
 {
 	fn on_nonzero_unbalanced(amount: NegativeImbalance<R>) {
 		let numeric_amount = amount.peek();
-		let author = <authorship::Module<R>>::author();
-		<balances::Module<R>>::resolve_creating(&<authorship::Module<R>>::author(), amount);
-		<system::Module<R>>::deposit_event(balances::RawEvent::Deposit(author, numeric_amount));
+		let author = <pallet_authorship::Pallet<R>>::author();
+		<pallet_balances::Pallet<R>>::resolve_creating(&<pallet_authorship::Pallet<R>>::author(), amount);
+		<frame_system::Pallet<R>>::deposit_event(pallet_balances::Event::Deposit(author, numeric_amount));
 	}
 }
 
-/// Converter for currencies to votes.
-pub struct CurrencyToVoteHandler<R>(sp_std::marker::PhantomData<R>);
-
-impl<R> CurrencyToVoteHandler<R>
+pub struct DealWithFees<R>(sp_std::marker::PhantomData<R>);
+impl<R> OnUnbalanced<NegativeImbalance<R>> for DealWithFees<R>
 where
-	R: balances::Trait,
-	R::Balance: Into<u128>,
+	R: pallet_balances::Config + pallet_treasury::Config + pallet_authorship::Config,
+	pallet_treasury::Module<R>: OnUnbalanced<NegativeImbalance<R>>,
+	<R as frame_system::Config>::AccountId: From<primitives::v1::AccountId>,
+	<R as frame_system::Config>::AccountId: Into<primitives::v1::AccountId>,
+	<R as frame_system::Config>::Event: From<pallet_balances::Event<R>>,
 {
-	fn factor() -> u128 {
-		let issuance: u128 = <balances::Module<R>>::total_issuance().into();
-		(issuance / u64::max_value() as u128).max(1)
-	}
-}
-
-impl<R> Convert<u128, u64> for CurrencyToVoteHandler<R>
-where
-	R: balances::Trait,
-	R::Balance: Into<u128>,
-{
-	fn convert(x: u128) -> u64 { (x / Self::factor()) as u64 }
-}
-
-impl<R> Convert<u128, u128> for CurrencyToVoteHandler<R>
-where
-	R: balances::Trait,
-	R::Balance: Into<u128>,
-{
-	fn convert(x: u128) -> u128 { x * Self::factor() }
-}
-
-/// Update the given multiplier based on the following formula
-///
-///   diff = (previous_block_weight - target_weight)/max_weight
-///   v = 0.00004
-///   next_weight = weight * (1 + (v * diff) + (v * diff)^2 / 2)
-///
-/// Where `target_weight` must be given as the `Get` implementation of the `T` generic type.
-/// https://research.web3.foundation/en/latest/polkadot/Token%20Economics/#relay-chain-transaction-fees
-pub struct TargetedFeeAdjustment<T, R>(sp_std::marker::PhantomData<(T, R)>);
-
-impl<T: Get<Perquintill>, R: system::Trait> Convert<FixedI128, FixedI128> for TargetedFeeAdjustment<T, R> {
-	fn convert(multiplier: FixedI128) -> FixedI128 {
-		let max_weight = MaximumBlockWeight::get();
-		let block_weight = <system::Module<R>>::block_weight().total().min(max_weight);
-		let target_weight = (T::get() * max_weight) as u128;
-		let block_weight = block_weight as u128;
-
-		// determines if the first_term is positive
-		let positive = block_weight >= target_weight;
-		let diff_abs = block_weight.max(target_weight) - block_weight.min(target_weight);
-		// safe, diff_abs cannot exceed u64 and it can always be computed safely even with the lossy
-		// `FixedI128::saturating_from_rational`.
-		let diff = FixedI128::saturating_from_rational(diff_abs, max_weight.max(1));
-		let diff_squared = diff.saturating_mul(diff);
-
-		// 0.00004 = 4/100_000 = 40_000/10^9
-		let v = FixedI128::saturating_from_rational(4, 100_000);
-		// 0.00004^2 = 16/10^10 Taking the future /2 into account... 8/10^10
-		let v_squared_2 = FixedI128::saturating_from_rational(8, 10_000_000_000u64);
-
-		let first_term = v.saturating_mul(diff);
-		let second_term = v_squared_2.saturating_mul(diff_squared);
-
-		if positive {
-			// Note: this is merely bounded by how big the multiplier and the inner value can go,
-			// not by any economical reasoning.
-			let excess = first_term.saturating_add(second_term);
-			multiplier.saturating_add(excess)
-		} else {
-			// Defensive-only: first_term > second_term. Safe subtraction.
-			let negative = first_term.saturating_sub(second_term);
-			multiplier.saturating_sub(negative)
-				// despite the fact that apply_to saturates weight (final fee cannot go below 0)
-				// it is crucially important to stop here and don't further reduce the weight fee
-				// multiplier. While at -1, it means that the network is so un-congested that all
-				// transactions have no weight fee. We stop here and only increase if the network
-				// became more busy.
-				.max(FixedI128::saturating_from_integer(-1))
+	fn on_unbalanceds<B>(mut fees_then_tips: impl Iterator<Item=NegativeImbalance<R>>) {
+		if let Some(fees) = fees_then_tips.next() {
+			// for fees, 80% to treasury, 20% to author
+			let mut split = fees.ration(80, 20);
+			if let Some(tips) = fees_then_tips.next() {
+				// for tips, if any, 100% to author
+				tips.merge_into(&mut split.1);
+			}
+			use pallet_treasury::Module as Treasury;
+			<Treasury<R> as OnUnbalanced<_>>::on_unbalanced(split.0);
+			<ToAuthor<R> as OnUnbalanced<_>>::on_unbalanced(split.1);
 		}
+	}
+}
+
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use frame_system::limits;
+	use frame_support::{parameter_types, PalletId, weights::DispatchClass};
+	use frame_support::traits::FindAuthor;
+	use sp_core::H256;
+	use sp_runtime::{
+		testing::Header,
+		traits::{BlakeTwo256, IdentityLookup},
+		Perbill,
+	};
+	use primitives::v1::AccountId;
+
+	type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Test>;
+	type Block = frame_system::mocking::MockBlock<Test>;
+
+	frame_support::construct_runtime!(
+		pub enum Test where
+			Block = Block,
+			NodeBlock = Block,
+			UncheckedExtrinsic = UncheckedExtrinsic,
+		{
+			System: frame_system::{Pallet, Call, Config, Storage, Event<T>},
+			Authorship: pallet_authorship::{Pallet, Call, Storage, Inherent},
+			Balances: pallet_balances::{Pallet, Call, Storage, Config<T>, Event<T>},
+			Treasury: pallet_treasury::{Pallet, Call, Storage, Config, Event<T>},
+		}
+	);
+
+	parameter_types! {
+		pub const BlockHashCount: u64 = 250;
+		pub BlockWeights: limits::BlockWeights = limits::BlockWeights::builder()
+			.base_block(10)
+			.for_class(DispatchClass::all(), |weight| {
+				weight.base_extrinsic = 100;
+			})
+			.for_class(DispatchClass::non_mandatory(), |weight| {
+				weight.max_total = Some(1024);
+			})
+			.build_or_panic();
+		pub BlockLength: limits::BlockLength = limits::BlockLength::max(2 * 1024);
+		pub const AvailableBlockRatio: Perbill = Perbill::one();
+	}
+
+	impl frame_system::Config for Test {
+		type BaseCallFilter = ();
+		type Origin = Origin;
+		type Index = u64;
+		type BlockNumber = u64;
+		type Call = Call;
+		type Hash = H256;
+		type Hashing = BlakeTwo256;
+		type AccountId = AccountId;
+		type Lookup = IdentityLookup<Self::AccountId>;
+		type Header = Header;
+		type Event = Event;
+		type BlockHashCount = BlockHashCount;
+		type BlockLength = BlockLength;
+		type BlockWeights = BlockWeights;
+		type DbWeight = ();
+		type Version = ();
+		type PalletInfo = PalletInfo;
+		type AccountData = pallet_balances::AccountData<u64>;
+		type OnNewAccount = ();
+		type OnKilledAccount = ();
+		type SystemWeightInfo = ();
+		type SS58Prefix = ();
+		type OnSetCode = ();
+	}
+
+	impl pallet_balances::Config for Test {
+		type Balance = u64;
+		type Event = Event;
+		type DustRemoval = ();
+		type ExistentialDeposit = ();
+		type AccountStore = System;
+		type MaxLocks = ();
+		type MaxReserves = ();
+		type ReserveIdentifier = [u8; 8];
+		type WeightInfo = ();
+	}
+
+	parameter_types! {
+		pub const TreasuryPalletId: PalletId = PalletId(*b"py/trsry");
+		pub const MaxApprovals: u32 = 100;
+	}
+
+	impl pallet_treasury::Config for Test {
+		type Currency = pallet_balances::Pallet<Test>;
+		type ApproveOrigin = frame_system::EnsureRoot<AccountId>;
+		type RejectOrigin = frame_system::EnsureRoot<AccountId>;
+		type Event = Event;
+		type OnSlash = ();
+		type ProposalBond = ();
+		type ProposalBondMinimum = ();
+		type SpendPeriod = ();
+		type Burn = ();
+		type BurnDestination = ();
+		type PalletId = TreasuryPalletId;
+		type SpendFunds = ();
+		type MaxApprovals = MaxApprovals;
+		type WeightInfo = ();
+	}
+
+	pub struct OneAuthor;
+	impl FindAuthor<AccountId> for OneAuthor {
+		fn find_author<'a, I>(_: I) -> Option<AccountId>
+			where I: 'a,
+		{
+			Some(Default::default())
+		}
+	}
+	impl pallet_authorship::Config for Test {
+		type FindAuthor = OneAuthor;
+		type UncleGenerations = ();
+		type FilterUncle = ();
+		type EventHandler = ();
+	}
+
+	pub fn new_test_ext() -> sp_io::TestExternalities {
+		let mut t = frame_system::GenesisConfig::default().build_storage::<Test>().unwrap();
+		// We use default for brevity, but you can configure as desired if needed.
+		pallet_balances::GenesisConfig::<Test>::default().assimilate_storage(&mut t).unwrap();
+		t.into()
+	}
+
+	#[test]
+	fn test_fees_and_tip_split() {
+		new_test_ext().execute_with(|| {
+			let fee = Balances::issue(10);
+			let tip = Balances::issue(20);
+
+			assert_eq!(Balances::free_balance(Treasury::account_id()), 0);
+			assert_eq!(Balances::free_balance(AccountId::default()), 0);
+
+			DealWithFees::on_unbalanceds(vec![fee, tip].into_iter());
+
+			// Author gets 100% of tip and 20% of fee = 22
+			assert_eq!(Balances::free_balance(AccountId::default()), 22);
+			// Treasury gets 80% of fee
+			assert_eq!(Balances::free_balance(Treasury::account_id()), 8);
+		});
 	}
 }

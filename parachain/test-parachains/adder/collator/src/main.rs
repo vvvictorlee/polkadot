@@ -1,4 +1,4 @@
-// Copyright 2018-2020 Parity Technologies (UK) Ltd.
+// Copyright 2020 Parity Technologies (UK) Ltd.
 // This file is part of Polkadot.
 
 // Polkadot is free software: you can redistribute it and/or modify
@@ -14,136 +14,92 @@
 // You should have received a copy of the GNU General Public License
 // along with Polkadot.  If not, see <http://www.gnu.org/licenses/>.
 
-//! Collator for polkadot
+//! Collator for the adder test parachain.
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use polkadot_node_primitives::CollationGenerationConfig;
+use polkadot_node_subsystem::messages::{CollationGenerationMessage, CollatorProtocolMessage};
+use polkadot_primitives::v1::Id as ParaId;
+use polkadot_cli::{Error, Result};
+use sc_cli::{Error as SubstrateCliError, Role, SubstrateCli};
+use sp_core::hexdisplay::HexDisplay;
+use test_parachain_adder_collator::Collator;
 
-use adder::{HeadData as AdderHead, BlockData as AdderBody};
-use sp_core::Pair;
-use codec::{Encode, Decode};
-use primitives::{
-	Hash,
-	parachain::{HeadData, BlockData, Id as ParaId, LocalValidationData, GlobalValidationSchedule},
-};
-use collator::{
-	InvalidHead, ParachainContext, Network, BuildParachainContext, Cli, SubstrateCli,
-};
-use parking_lot::Mutex;
-use futures::future::{Ready, ok, err, TryFutureExt};
+/// The parachain ID to collate for in case it wasn't set explicitly through CLI.
+const DEFAULT_PARA_ID: ParaId = ParaId::new(100);
 
-const GENESIS: AdderHead = AdderHead {
-	number: 0,
-	parent_hash: [0; 32],
-	post_state: [
-		1, 27, 77, 3, 221, 140, 1, 241, 4, 145, 67, 207, 156, 76, 129, 126, 75,
-		22, 127, 29, 27, 131, 229, 198, 240, 241, 13, 137, 186, 30, 123, 206
-	],
-};
+mod cli;
+use cli::Cli;
 
-const GENESIS_BODY: AdderBody = AdderBody {
-	state: 0,
-	add: 0,
-};
+fn main() -> Result<()> {
+	let cli = Cli::from_args();
 
-#[derive(Clone)]
-struct AdderContext {
-	db: Arc<Mutex<HashMap<AdderHead, AdderBody>>>,
-	/// We store it here to make sure that our interfaces require the correct bounds.
-	_network: Option<Arc<dyn Network>>,
-}
+	match cli.subcommand {
+		Some(cli::Subcommand::ExportGenesisState(_params)) => {
+			let collator = Collator::new();
+			println!("0x{:?}", HexDisplay::from(&collator.genesis_head()));
 
-/// The parachain context.
-impl ParachainContext for AdderContext {
-	type ProduceCandidate = Ready<Result<(BlockData, HeadData), InvalidHead>>;
-
-	fn produce_candidate(
-		&mut self,
-		_relay_parent: Hash,
-		_global_validation: GlobalValidationSchedule,
-		local_validation: LocalValidationData,
-	) -> Self::ProduceCandidate
-	{
-		let adder_head = match AdderHead::decode(&mut &local_validation.parent_head.0[..]) {
-			Ok(adder_head) => adder_head,
-			Err(_) => return err(InvalidHead)
-		};
-
-		let mut db = self.db.lock();
-
-		let last_body = if adder_head == GENESIS {
-			GENESIS_BODY
-		} else {
-			db.get(&adder_head)
-				.expect("All past bodies stored since this is the only collator")
-				.clone()
-		};
-
-		let next_body = AdderBody {
-			state: last_body.state.overflowing_add(last_body.add).0,
-			add: adder_head.number % 100,
-		};
-
-		let next_head = adder::execute(adder_head.hash(), adder_head, &next_body)
-			.expect("good execution params; qed");
-
-		let encoded_head = HeadData(next_head.encode());
-		let encoded_body = BlockData(next_body.encode());
-
-		println!("Created collation for #{}, post-state={}",
-			next_head.number, next_body.state.overflowing_add(next_body.add).0);
-
-		db.insert(next_head.clone(), next_body);
-		ok((encoded_body, encoded_head))
-	}
-}
-
-impl BuildParachainContext for AdderContext {
-	type ParachainContext = Self;
-
-	fn build<Client, SP, Extrinsic>(
-		self,
-		_: Arc<Client>,
-		_: SP,
-		network: impl Network + Clone + 'static,
-	) -> Result<Self::ParachainContext, ()> {
-		Ok(Self { _network: Some(Arc::new(network)), ..self })
-	}
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-	let key = Arc::new(Pair::from_seed(&[1; 32]));
-	let id: ParaId = 100.into();
-
-	println!("Starting adder collator with genesis: ");
-
-	{
-		let encoded = GENESIS.encode();
-		println!("Dec: {:?}", encoded);
-		print!("Hex: 0x");
-		for byte in encoded {
-			print!("{:02x}", byte);
+			Ok::<_, Error>(())
 		}
+		Some(cli::Subcommand::ExportGenesisWasm(_params)) => {
+			let collator = Collator::new();
+			println!("0x{:?}", HexDisplay::from(&collator.validation_code()));
 
-		println!();
-	}
+			Ok(())
+		}
+		None => {
+			let runner = cli.create_runner(&cli.run.base)
+				.map_err(|e| SubstrateCliError::Application(Box::new(e) as Box::<(dyn 'static + Send + Sync + std::error::Error)>))?;
 
-	let context = AdderContext {
-		db: Arc::new(Mutex::new(HashMap::new())),
-		_network: None,
-	};
+			runner.run_node_until_exit(|config| async move {
+				let role = config.role.clone();
 
-	let cli = Cli::from_iter(&["-dev"]);
-	let runner = cli.create_runner(&cli.run.base)?;
-	runner.async_run(|config| {
-		collator::start_collator(
-			context,
-			id,
-			key,
-			config,
-			None,
-		).map_err(|e| e.into())
-	})?;
+				match role {
+					Role::Light => Err("Light client not supported".into()),
+					_ => {
+						let collator = Collator::new();
 
+						let full_node = polkadot_service::build_full(
+							config,
+							polkadot_service::IsCollator::Yes(collator.collator_key()),
+							None,
+							true,
+							None,
+							None,
+							polkadot_service::RealOverseerGen,
+						).map_err(|e| e.to_string())?;
+						let mut overseer_handler = full_node
+							.overseer_handler
+							.expect("Overseer handler should be initialized for collators");
+
+						let genesis_head_hex =
+							format!("0x{:?}", HexDisplay::from(&collator.genesis_head()));
+						let validation_code_hex =
+							format!("0x{:?}", HexDisplay::from(&collator.validation_code()));
+
+						let para_id = cli.run.parachain_id.map(ParaId::from).unwrap_or(DEFAULT_PARA_ID);
+
+						log::info!("Running adder collator for parachain id: {}", para_id);
+						log::info!("Genesis state: {}", genesis_head_hex);
+						log::info!("Validation code: {}", validation_code_hex);
+
+						let config = CollationGenerationConfig {
+							key: collator.collator_key(),
+							collator: collator.create_collation_function(full_node.task_manager.spawn_handle()),
+							para_id,
+						};
+						overseer_handler
+							.send_msg(CollationGenerationMessage::Initialize(config), "Collator")
+							.await;
+
+						overseer_handler
+							.send_msg(CollatorProtocolMessage::CollateOn(para_id), "Collator")
+							.await;
+
+						Ok(full_node.task_manager)
+					}
+				}
+			})
+		}
+	}?;
 	Ok(())
 }
